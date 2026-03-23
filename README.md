@@ -83,13 +83,13 @@ up-rust = { version = "0.9" }
 up-transport-mqtt5 = { version = "0.4" }
 ```
 
-Please refer to the [publisher_example](/examples/publisher_example.rs) and [subscriber_example](/examples/subscriber_example.rs) to see how to initialize and use the transport.
+Please refer to the [publisher_example](./examples/publisher_example.rs) and [subscriber_example](./examples/subscriber_example.rs) to see how to initialize and use the transport.
 
 The library contains the following modules:
 
 | Module    | uProtocol Specification                                                                                 | Purpose                                                                                                   |
 | --------- | ------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| transport | [uP-L1 Specifications](https://github.com/eclipse-uprotocol/uprotocol-spec/blob/v1.6.0-alpha.7/up-l1/README.adoc) | Implementation of MQTT5 uTransport client used for bidirectional point-2-point communication between uEs. |
+| transport | [uP-L1 Specifications](https://github.com/eclipse-uprotocol/up-spec/blob/v1.6.0-alpha.7/up-l1/README.adoc) | Implementation of MQTT5 uTransport client used for bidirectional point-2-point communication between uEs. |
 
 ### Supported Message Priority Levels
 `uman~utransport-send-ignore-priority~1`
