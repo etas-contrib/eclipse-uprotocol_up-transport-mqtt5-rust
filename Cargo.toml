@@ -52,7 +52,7 @@ tokio = { version = "1.45.1", default-features = false, features = ["rt", "rt-mu
 up-rust = { version = "0.9", default-features = false }
 
 [build-dependencies]
-testcontainers = { version = "0.26.0", default-features = false, features = ["blocking"] }
+testcontainers = { version = "0.27.1", default-features = false, features = ["blocking"] }
 
 [dev-dependencies]
 env_logger = { version = "0.11.8" }
@@ -60,7 +60,11 @@ mockall = { version = "0.14.0" }
 serial_test = { version = "3.2.0" }
 tempfile = { version = "3.23.0" }
 test-case = { version = "3.3.1" }
-testcontainers = { version = "0.26.0", default-features = false }
+testcontainers = { version = "0.27.1", default-features = false }
+# https://rustsec.org/advisories/RUSTSEC-2026-0049
+rustls-webpki = { version = "0.103.10" }
+# https://rustsec.org/advisories/RUSTSEC-2026-0009
+time = { version = "0.3.47" }
 tokio = { version = "1.45.1", default-features = false, features = [
     "macros",
     "rt",
