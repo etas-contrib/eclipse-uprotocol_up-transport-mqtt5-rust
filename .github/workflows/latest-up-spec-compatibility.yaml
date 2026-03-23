@@ -35,7 +35,7 @@ jobs:
   requirements-tracing:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: "recursive"
       - name: Fast-Forward to HEAD revision of uProtocol Spec main branch
@@ -65,10 +65,9 @@ jobs:
 
       # now try to build and run the tests which may fail if incomaptible changes
       # have been introduced into the uProtocol Core API
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
         with: 
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-      - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
       - name: Run tests
         run: |
