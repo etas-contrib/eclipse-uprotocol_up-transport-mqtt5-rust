@@ -36,7 +36,6 @@ use async_channel::Receiver;
 use bytes::Bytes;
 #[cfg(feature = "cli")]
 use clap::{Args, ValueEnum};
-use futures::stream::StreamExt;
 use listener_registry::{RegisteredListeners, SubscriptionIdentifier};
 use log::{debug, trace};
 use mqtt_client::MqttClientOperations;
@@ -429,12 +428,12 @@ impl Mqtt5Transport {
     /// * `registered_listeners` - Map of topic filters to listeners.
     /// * `message_stream` - Stream of incoming MQTT PUBLISH packets.
     /// * `mqtt_client_operations` - The client to use for interacting with the MQTT broker.
-    fn create_cb_message_handler(&mut self, mut message_stream: Receiver<Option<Message>>) {
+    fn create_cb_message_handler(&mut self, message_stream: Receiver<Option<Message>>) {
         let cloned_client_operations = self.mqtt_client.clone();
         let cloned_registered_listeners = self.registered_listeners.clone();
         let cloned_message_mapper = self.message_mapper.clone();
         let handle = tokio::spawn(async move {
-            while let Some(msg_opt) = message_stream.next().await {
+            while let Ok(msg_opt) = message_stream.recv().await {
                 let Some(msg) = msg_opt else {
                     // None means that the connection is dropped.
                     debug!("Lost connection to MQTT broker");
