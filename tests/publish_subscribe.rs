@@ -15,9 +15,18 @@ use std::{str::FromStr, sync::Arc, time::Duration};
 
 use log::debug;
 use serial_test::serial;
-use up_rust::{MockUListener, UMessageBuilder, UTransport, UUri};
+use up_rust::{MockUListener, UCode, UMessageBuilder, UTransport, UUri};
 
 mod common;
+
+// User credentials to be used with the Mosquitto broker
+// created using https://dmelo.eu/blog/mosquitto_passwd_gen/
+// username: publisher, password: uprotocol
+// username: subscriber, password: uprotocol
+const PASSWD_FILE: &str = r#"
+    publisher:$7$101$njCnRQhFsQbDh5NF$pWuZpNcTNwM1tbDePb+UTww3Y6cL5jfC0tXVAUvRTc5wTDjE9PnzTQmyxW/1RA86rHvtXywrqlJS2cWyELeI1Q==
+    subscriber:$7$101$zACO8Nh9VM+YjQJR$hZZSQ+Qlp1Gvr4Fau00dQTyiNmBAkHd/uE2Ucd1uZ1ST870Y5WH5cQ33/VnbfJgURePpMBSBkTdaQyqMCIe5GQ==
+  "#;
 
 const MOSQUITTO_CONFIG_W_PERSISTENCE: &str = r#"
 persistence true
@@ -34,7 +43,8 @@ async fn test_publish_and_subscribe_succeeds_after_reconnect(mosquitto_config: O
     let _ = env_logger::try_init();
 
     // fixture
-    let mosquitto = common::start_mosquitto(mosquitto_config, Some(15000)).await;
+    let mosquitto =
+        common::start_mosquitto(mosquitto_config, Some(PASSWD_FILE), None, Some(15000)).await;
     let topic = UUri::from_str("//publisher/A8000/2/8A50").expect("invalid topic URI");
     let message_to_send = UMessageBuilder::publish(topic)
         .build_with_payload(
@@ -57,6 +67,8 @@ async fn test_publish_and_subscribe_succeeds_after_reconnect(mosquitto_config: O
         "subscriber",
         mosquitto.port(),
         Some("subscriber_client_id"),
+        Some("subscriber"),
+        Some("uprotocol"),
     )
     .await
     .map(Arc::new)
@@ -76,6 +88,8 @@ async fn test_publish_and_subscribe_succeeds_after_reconnect(mosquitto_config: O
         "publisher",
         mosquitto.port(),
         Some("publisher_client_id"),
+        Some("publisher"),
+        Some("uprotocol"),
     )
     .await
     .map(Arc::new)
@@ -140,4 +154,94 @@ async fn test_publish_and_subscribe_succeeds_after_reconnect(mosquitto_config: O
         .is_ok(),
         "did not receive second message before timeout"
     );
+}
+
+#[tokio::test]
+#[cfg_attr(not(docker_available), ignore)]
+// This test requires Docker to run the Mosquitto MQTT broker.
+async fn test_connect_fails_for_wrong_credentials() {
+    let _ = env_logger::try_init();
+
+    // fixture
+    let mosquitto = common::start_mosquitto(None, Some(PASSWD_FILE), None, None).await;
+    let port = mosquitto.port();
+
+    let publisher = common::create_up_transport_mqtt(
+        "publisher",
+        port,
+        None,
+        Some("publisher"),
+        Some("wrong_password"),
+    )
+    .await
+    .expect("failed to create MQTT5 transport");
+
+    assert!(
+        publisher.connect().await.is_err_and(|err| {
+            debug!("connect attempt failed: {err:?}");
+            // this is not generally required by the MQTT 5 spec but we know that
+            // the Mosquitto broker returns a CONNACK with reason code 135 instead
+            // of simply closing the connection
+            err.get_code() == UCode::PERMISSION_DENIED
+        }),
+        "expected connection to fail due to wrong credentials"
+    );
+
+    publisher.shutdown().await;
+}
+
+#[tokio::test]
+#[cfg_attr(not(docker_available), ignore)]
+// This test requires Docker to run the Mosquitto MQTT broker.
+async fn test_publish_fails_if_unauthorized() {
+    let _ = env_logger::try_init();
+
+    // fixture
+    let acl_file = r#"
+        user publisher
+        topic write publisher/8000/A/#
+    "#;
+    let mosquitto = common::start_mosquitto(None, Some(PASSWD_FILE), Some(acl_file), None).await;
+
+    let publisher = common::create_up_transport_mqtt(
+        "publisher",
+        mosquitto.port(),
+        None,
+        Some("publisher"),
+        Some("uprotocol"),
+    )
+    .await
+    .expect("failed to create transport at sending end");
+
+    publisher
+        .connect()
+        .await
+        .expect("failed to connect publisher to broker");
+
+    let authorized_source = UUri::from_str("/A8000/2/8A50").unwrap();
+    assert!(
+        publisher
+            .send(UMessageBuilder::publish(authorized_source).build().unwrap())
+            .await
+            .is_ok(),
+        "expected publishing to topic to succeed with correct authority"
+    );
+
+    let unauthorized_source = UUri::from_str("/100/1/B500").unwrap();
+    assert!(
+        publisher
+            .send(
+                UMessageBuilder::publish(unauthorized_source)
+                    .build()
+                    .unwrap()
+            )
+            .await
+            .is_err_and(|err| {
+                debug!("failed to publish message: {err:?}");
+                err.get_code() == UCode::PERMISSION_DENIED
+            }),
+        "expected publishing to topic to fail due to missing authority"
+    );
+
+    publisher.shutdown().await;
 }

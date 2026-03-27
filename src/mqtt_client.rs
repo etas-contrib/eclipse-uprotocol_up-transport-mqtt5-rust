@@ -88,10 +88,12 @@ pub struct MqttClientOptions {
     pub session_expiry_interval: u32,
 
     /// The username to use for authenticating to the MQTT endpoint.
+    // [impl->dsn~mqtt5-transport-authorization~1]
     #[cfg_attr(feature = "cli", arg(long = PARAM_MQTT_USERNAME, value_name = "USERNAME", env = "MQTT_USERNAME"))]
     pub username: Option<String>,
 
     /// The password to use for authenticating to the MQTT endpoint.
+    // [impl->dsn~mqtt5-transport-authorization~1]
     #[cfg_attr(feature = "cli", arg(long = PARAM_MQTT_PASSWORD, value_name = "PWD", env = "MQTT_PASSWORD"))]
     pub password: Option<String>,
 
@@ -146,6 +148,7 @@ impl TryFrom<&MqttClientOptions> for paho_mqtt::ConnectOptions {
             // TODO: make this configiurable
             .connect_timeout(Duration::from_secs(10))
             .ssl_options(ssl_options);
+        // [impl->dsn~mqtt5-transport-authorization~1]
         if let Some(v) = options.username.as_ref() {
             connect_options_builder.user_name(v);
         }
@@ -180,10 +183,12 @@ pub struct SslOptions {
 
     /// The file in PEM format containing the public X.509 certificate chain to use for authenticating to a broker.
     /// May also contain the client’s private key.
+    // [impl->dsn~mqtt5-transport-authorization~1]
     #[cfg_attr(feature = "cli", arg(long = PARAM_MQTT_KEY_STORE_PATH, value_name = "PATH", env = "KEY_STORE_PATH", value_parser = clap::builder::PathBufValueParser::new()))]
     pub key_store_path: Option<PathBuf>,
 
     /// The file in PEM format containing the client’s private key (if not included in the Key Store).
+    // [impl->dsn~mqtt5-transport-authorization~1]
     #[cfg_attr(feature = "cli", arg(long = PARAM_MQTT_PRIVATE_KEY_PATH, value_name = "PATH", env = "PRIVATE_KEY_PATH", value_parser = clap::builder::PathBufValueParser::new()))]
     pub private_key_path: Option<PathBuf>,
 
@@ -208,6 +213,7 @@ impl TryFrom<&SslOptions> for paho_mqtt::SslOptions {
         if let Some(path) = options.trust_store_path.as_ref() {
             builder.trust_store(path)?;
         }
+        // [impl->dsn~mqtt5-transport-authorization~1]
         if let Some(path) = options.key_store_path.as_ref() {
             builder.key_store(path)?;
         }
@@ -221,6 +227,7 @@ impl TryFrom<&SslOptions> for paho_mqtt::SslOptions {
     }
 }
 
+// [impl->dsn~mapping-of-reason-codes~1]
 fn ustatus_from_paho_error(paho_error: paho_mqtt::Error) -> UStatus {
     match paho_error {
         paho_mqtt::Error::Disconnected => {
@@ -704,10 +711,37 @@ mod tests {
     #[test_case::test_case(
         paho_mqtt::Error::Disconnected => UCode::UNAVAILABLE;
         "disconnected")]
-    // [utest->dsn~mqtt5-transport-authorization~1]
+    #[test_case::test_case(
+        paho_mqtt::Error::ReasonCode(paho_mqtt::ReasonCode::BadUserNameOrPassword, Properties::new()) => UCode::UNAUTHENTICATED;
+        "bad username or password")]
     #[test_case::test_case(
         paho_mqtt::Error::ReasonCode(paho_mqtt::ReasonCode::NotAuthorized, Properties::new()) => UCode::PERMISSION_DENIED;
         "not authorized")]
+    #[test_case::test_case(
+        paho_mqtt::Error::ReasonCode(paho_mqtt::ReasonCode::ServerUnavailable, Properties::new()) => UCode::UNAVAILABLE;
+        "server unavailable")]
+    #[test_case::test_case(
+        paho_mqtt::Error::ReasonCode(paho_mqtt::ReasonCode::ServerBusy, Properties::new()) => UCode::UNAVAILABLE;
+        "server busy")]
+    #[test_case::test_case(
+        paho_mqtt::Error::ReasonCode(paho_mqtt::ReasonCode::BadAuthenticationMethod, Properties::new()) => UCode::UNAUTHENTICATED;
+        "bad authentication method")]
+    #[test_case::test_case(
+        paho_mqtt::Error::ReasonCode(paho_mqtt::ReasonCode::MessageRateTooHigh, Properties::new()) => UCode::RESOURCE_EXHAUSTED;
+        "message rate too high")]
+    #[test_case::test_case(
+        paho_mqtt::Error::ReasonCode(paho_mqtt::ReasonCode::QuotaExceeded, Properties::new()) => UCode::RESOURCE_EXHAUSTED;
+        "quota exceeded")]
+    #[test_case::test_case(
+        paho_mqtt::Error::ReasonCode(paho_mqtt::ReasonCode::ConnectionRateExceeded, Properties::new()) => UCode::RESOURCE_EXHAUSTED;
+        "connection rate exceeded")]
+    #[test_case::test_case(
+        paho_mqtt::Error::ReasonCode(paho_mqtt::ReasonCode::MaximumConnectTime, Properties::new()) => UCode::RESOURCE_EXHAUSTED;
+        "maximum connect time exceeded")]
+    #[test_case::test_case(
+        paho_mqtt::Error::ReasonCode(paho_mqtt::ReasonCode::PacketTooLarge, Properties::new()) => UCode::INTERNAL;
+        "packet too large")]
+    // [utest->dsn~mapping-of-reason-codes~1]
     fn test_ustatus_from_paho_error(paho_error: paho_mqtt::Error) -> UCode {
         ustatus_from_paho_error(paho_error).get_code()
     }
