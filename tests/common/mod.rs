@@ -43,6 +43,8 @@ pub async fn create_up_transport_mqtt<S: Into<String>>(
     authority_name: S,
     host_broker_port: u16,
     mqtt_client_id: Option<S>,
+    username: Option<S>,
+    password: Option<S>,
 ) -> Result<Mqtt5Transport, UStatus> {
     let mqtt_client_options = MqttClientOptions {
         // tcp or ssl
@@ -53,8 +55,8 @@ pub async fn create_up_transport_mqtt<S: Into<String>>(
         max_buffered_messages: 100,
         session_expiry_interval: 3600,
         ssl_options: None,
-        username: None,
-        password: None,
+        username: username.map(|v| v.into()),
+        password: password.map(|v| v.into()),
     };
     let options = Mqtt5TransportOptions {
         mode: TransportMode::InVehicle,
@@ -70,6 +72,8 @@ pub(crate) struct MosquittoBroker {
     _broker: ContainerAsync<GenericImage>,
     port: u16,
     _config_path: TempPath,
+    _passwords_path: TempPath,
+    _acl_path: TempPath,
 }
 
 impl MosquittoBroker {
@@ -90,10 +94,15 @@ impl MosquittoBroker {
     }
 }
 
-/// Starts an Eclipse Mosquitto Docker container with given configuration options.
+/// Starts an Eclipse Mosquitto Docker container based on given configuration options.
 ///
 /// # Arguments
-/// * `config` - Optional string slice containing additional Mosquitto configuration options.
+/// * `config` - Additional Mosquitto configuration options.
+/// * `passwords` - Credentials to include in the Mosquitto configuration.
+///   If `None`, the broker will allow anonymous access.
+/// * `acl_entries` - Access Control List definitions to include in the Mosquitto configuration.
+/// * `mapped_port` - The host port to map the Mosquitto broker's container port to.
+///   If `None`, the broker will be mapped to an ephemeral port on the host.
 ///
 /// # Returns
 /// A [MosquittoBroker] instance that represents the running Mosquitto container.
@@ -102,39 +111,72 @@ impl MosquittoBroker {
 /// The given configuration will be appended to the default Mosquitto configuration which is:
 /// ```text
 /// listener 1883
-/// allow_anonymous true
 /// ```
 ///
 /// The configuration is written to a temporary file which is bind-mounted into the container.
 pub(crate) async fn start_mosquitto(
     config: Option<&str>,
+    passwords: Option<&str>,
+    acl_entries: Option<&str>,
     mapped_port: Option<u16>,
 ) -> MosquittoBroker {
     let mut mosquitto_config =
         tempfile::NamedTempFile::new().expect("failed to create Mosquitto config file");
     writeln!(mosquitto_config, "listener 1883").expect("failed to write to Mosquitto config file");
-    writeln!(mosquitto_config, "allow_anonymous true")
-        .expect("failed to write to Mosquitto config file");
+
     if let Some(configuration) = config {
         writeln!(mosquitto_config, "{configuration}")
             .expect("failed to write to Mosquitto config file");
     }
 
-    let config_path = mosquitto_config.into_temp_path();
+    let mut mosquitto_passwords =
+        tempfile::NamedTempFile::new().expect("failed to create Mosquitto password file");
+    if let Some(pwd) = passwords {
+        writeln!(mosquitto_passwords, "{pwd}").expect("failed to write to Mosquitto password file");
+        writeln!(mosquitto_config, "allow_anonymous false")
+            .expect("failed to write to Mosquitto config file");
+        writeln!(
+            mosquitto_config,
+            "password_file /mosquitto/config/passwords"
+        )
+        .expect("failed to write to Mosquitto config file");
+    } else {
+        writeln!(mosquitto_config, "allow_anonymous true")
+            .expect("failed to write to Mosquitto config file");
+    }
 
+    let mut mosquitto_acls =
+        tempfile::NamedTempFile::new().expect("failed to create Mosquitto ACL file");
+    if let Some(acls) = acl_entries {
+        writeln!(mosquitto_acls, "{acls}").expect("failed to write to Mosquitto ACL file");
+        writeln!(mosquitto_config, "acl_file /mosquitto/config/acls")
+            .expect("failed to write to Mosquitto config file");
+    }
+
+    let config_path = mosquitto_config.into_temp_path();
+    let password_path = mosquitto_passwords.into_temp_path();
+    let acl_path = mosquitto_acls.into_temp_path();
     let container_port = MOSQUITTO_CONTAINER_PORT.into();
     let container = GenericImage::new("eclipse-mosquitto", "2.0")
         .with_exposed_port(container_port)
         // mosquitto seems to write to stderr
         .with_wait_for(WaitFor::message_on_stderr(" running"))
         // uncomment next line in order capture Mosquitto log messages
-        // .with_log_consumer(
-        //     testcontainers::core::logs::consumer::logging_consumer::LoggingConsumer::new(),
-        // )
+        .with_log_consumer(
+            testcontainers::core::logs::consumer::logging_consumer::LoggingConsumer::new(),
+        )
         // use given configuration
         .with_mount(Mount::bind_mount(
             config_path.display().to_string(),
             "/mosquitto/config/mosquitto.conf",
+        ))
+        .with_mount(Mount::bind_mount(
+            password_path.display().to_string(),
+            "/mosquitto/config/passwords",
+        ))
+        .with_mount(Mount::bind_mount(
+            acl_path.display().to_string(),
+            "/mosquitto/config/acls",
         ))
         .with_mapped_port(mapped_port.unwrap_or_default(), container_port)
         .start()
@@ -150,5 +192,7 @@ pub(crate) async fn start_mosquitto(
         _broker: container,
         port: host_port,
         _config_path: config_path,
+        _passwords_path: password_path,
+        _acl_path: acl_path,
     }
 }

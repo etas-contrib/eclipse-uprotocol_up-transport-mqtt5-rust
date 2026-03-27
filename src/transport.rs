@@ -11,6 +11,10 @@
  * SPDX-License-Identifier: Apache-2.0
  ********************************************************************************/
 
+/*!
+This module contains the implementation of the [uProtocol Transport & Session Layer API](https://github.com/eclipse-uprotocol/up-spec/blob/v1.6.0-alpha.7/up-l1/README.adoc) for the MQTT 5.0 protocol.
+*/
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -196,6 +200,19 @@ mod tests {
         Some(UCode::UNAVAILABLE),
         Some(UCode::UNAVAILABLE);
         "fails if not connected to broker"
+    )]
+    // [utest->dsn~mqtt5-transport-authorization~1]
+    #[test_case(
+        create_test_message(
+            UMessageType::UMESSAGE_TYPE_PUBLISH,
+            "//vin.vehicles/A8000/2/8A50",
+            None,
+            "payload",
+        ),
+        "vin.vehicles/8000/A/2/8A50",
+        Some(UCode::PERMISSION_DENIED),
+        Some(UCode::PERMISSION_DENIED);
+        "fails if not authorized"
     )]
     #[test_case(
         create_test_message(

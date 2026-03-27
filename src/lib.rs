@@ -12,7 +12,7 @@
  ********************************************************************************/
 
 /*!
-This crate provides an implementation of the MQTT 5 uProtocol Transport.
+This crate provides an implementation of the [uProtocol MQTT 5 Transport v1.6.0-alpha.7](https://github.com/eclipse-uprotocol/up-spec/blob/v1.6.0-alpha.7/up-l1/mqtt_5.adoc).
 
 The transport requires an MQTT 5 broker to connect to and uses MQTT 5 `PUBLISH`
 packets to transfer uProtocol messages between uEntities.
@@ -27,8 +27,23 @@ processing requirements of the use case at hand. The transport does
 not make any implicit assumptions about the number of threads available
 and does not spawn any threads itself.
 
+## Using the Library
+
+Most developers will want to create an instance of the [Mqtt5Transport] struct and use it with uProtocol's Communication Layer API and its default implementation which are provided by the *up-rust* library. The crate also provides an implementation of [uProtocol's Transport & Session Layer API](up_rust::UTransport) which can be used to send and receive arbitrary (uProtocol) messages regardless of any message exchange patterns as imposed by the Communication Layer API.
+
+The libraries need to be added to the `[dependencies]` section of the `Cargo.toml` file:
+
+```toml
+[dependencies]
+up-rust = { version = "0.9" }
+up-transport-mqtt5 = { version = "0.4" }
+```
+
+Please refer to the [examples](https://github.com/eclipse-uprotocol/up-transport-mqtt5-rust/tree/v0.4.0/examples) folder to see how to initialize and use the transport.
+
 [tokio `Runtime`]: https://docs.rs/tokio/latest/tokio/runtime/index.html
 */
+
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -42,6 +57,8 @@ use mqtt_client::MqttClientOperations;
 pub use mqtt_client::{MqttClientOptions, SslOptions};
 use paho_mqtt::{self as mqtt, Message, QOS_1};
 use tokio::{sync::RwLock, task::JoinHandle};
+#[allow(unused_imports)]
+use up_rust::UTransport;
 use up_rust::{ComparableListener, UAttributes, UCode, UMessage, UStatus, UUri, UUriError};
 
 mod listener_registry;
@@ -311,17 +328,50 @@ fn verify_authority_name<S: Into<String>>(authority: S) -> Result<String, UStatu
 ///
 /// The transport spawns a dedicated tokio task that listens for incoming messages
 /// and dispatches them to the listeners that have been registered using
-/// `up_rust::UTransport::register_listener`.
+/// [up_rust::UTransport::register_listener].
 ///
 /// <div class="warning">
 ///
 /// The registered listeners are being invoked sequentially on the **same thread**
 /// that the message handling task runs on. Implementers of listeners are therefore
 /// **strongly advised** to move non-trivial processing logic to **another/dedicated
-/// thread**, if necessary. Please refer to the `subscriber_example` in the
-/// examples directory for how this could be done.
+/// thread**, if necessary. Please refer to the *subscriber_example* in the
+/// *examples* folder for how this could be done.
 ///
 /// </div>
+///
+/// ### Supported Message Priority Levels
+///
+/// The [Self::send] function always uses a standard MQTT 5 PUBLISH packet to transfer the message
+/// to the MQTT broker regardless of the service class (priority) set on a uProtocol message.
+///
+/// ### Supported Message Delivery Methods
+///
+/// The transport supports the [push delivery method](https://github.com/eclipse-uprotocol/up-spec/blob/v1.6.0-alpha.7/up-l1/README.adoc#5-message-delivery) only.
+/// The [Self::receive] function therefore always returns [UCode::UNIMPLEMENTED].
+///
+/// ### Maximum number of listeners
+///
+/// The transport can be configured with the maximum number of filter patterns that listeners can
+/// be registered for by means of the [Mqtt5TransportOptions] struct that is being passed into [Self::new].
+///
+/// ### Authentication & Authorization
+///
+/// The transport can be configured with credentials that the transport will provide to the MQTT 5
+/// broker during connection establishment. A _username_ and _password_ and/or an X.509 client certificate
+/// can be specified as part of the [Mqtt5TransportOptions] that are passed into the [Self::new] function
+/// for creating a transport instance.
+///
+/// The mechanism for configuring access to topics is specific to the particular MQTT 5 broker at hand.
+/// The code in the [integration tests folder](https://github.com/eclipse-uprotocol/up-transport-mqtt5-rust/tree/v0.4.0/tests)
+/// illustrates, how ACLs can be used with an Eclipse Mosquitto MQTT broker to restrict a client's
+/// authority to publish messages and subscribe to topics.
+///
+// [uman->req~utransport-send-qos-mapping~1]
+// [uman->req~utransport-delivery-methods~1]
+// [uman->req~utransport-registerlistener-max-listeners~1]
+// [uman->req~utransport-send-prevent-address-spoofing~1]
+// [uman->req~utransport-registerlistener-prevent-unauthorized-access~1]
 pub struct Mqtt5Transport {
     /// Client instance for connecting to mqtt broker.
     mqtt_client: Arc<dyn MqttClientOperations>,
@@ -339,16 +389,20 @@ impl Mqtt5Transport {
     /// Creates a new transport.
     ///
     /// The connection to the MQTT broker needs to be established by means of the
-    /// [`Self::connect`] function. This allows for clients to implement any particular
+    /// [Self::connect] function. This allows for clients to implement any particular
     /// connection strategy using e.g. an exponential backoff for subsequent connection
     /// attempts.
     ///
     /// # Arguments
     /// * `options` - Configuration options for the transport.
-    /// * `authority_name` - Authority name of the local uEntity.
+    /// * `authority_name` - The (logical) name to use for the host that the local uEntity runs on.
+    ///   This name will be used as part of the origin and destination addresses of uProtocol messages.
+    ///   It is important to use a meaningful authority name here and make sure that it is unique across all
+    ///   uEntities in the same deployment, otherwise message filtering will not work correctly.
     ///
     /// # Errors
-    /// Will return an error if the creation of the Paho client fails, or if the given authority name is invalid.
+    /// Will return an error if the creation of the underlying Paho MQTT client fails, or if the given authority
+    /// name is invalid.
     pub async fn new<S: Into<String>>(
         options: Mqtt5TransportOptions,
         authority_name: S,
