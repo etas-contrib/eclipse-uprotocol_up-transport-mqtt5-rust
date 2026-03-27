@@ -19,7 +19,6 @@ allow = [
     "Apache-2.0",
     "BSD-2-Clause",
     "BSD-3-Clause",
-    "CDLA-Permissive-2.0",
     "EPL-2.0",
     "ISC",
     "MIT",
@@ -39,6 +38,4 @@ skip-tree = [
 
 [advisories]
 ignore = [
-    # https://rustsec.org/advisories/RUSTSEC-2026-0066
-    { id = "RUSTSEC-2026-0066", reason = "this affects the testcontainers crate which is used for running tests only" },
 ]

@@ -23,7 +23,7 @@ use async_trait::async_trait;
 use backon::Retryable;
 #[cfg(feature = "cli")]
 use clap::Args;
-use log::{debug, trace};
+use log::{debug, error, trace};
 use up_rust::{UCode, UStatus};
 
 use crate::{listener_registry::SubscribedTopicProvider, SubscriptionIdentifier};
@@ -150,7 +150,7 @@ impl TryFrom<&MqttClientOptions> for paho_mqtt::ConnectOptions {
             connect_options_builder.user_name(v);
         }
         if let Some(v) = options.password.as_ref() {
-            connect_options_builder.password(v);
+            connect_options_builder.password(v.as_bytes());
         }
         Ok(connect_options_builder.finalize())
     }
@@ -218,6 +218,49 @@ impl TryFrom<&SslOptions> for paho_mqtt::SslOptions {
             builder.private_key_password(pwd);
         }
         Ok(builder.finalize())
+    }
+}
+
+fn ustatus_from_paho_error(paho_error: paho_mqtt::Error) -> UStatus {
+    match paho_error {
+        paho_mqtt::Error::Disconnected => {
+            UStatus::fail_with_code(UCode::UNAVAILABLE, "not connected to MQTT broker")
+        }
+        paho_mqtt::Error::TcpTlsConnectFailure => {
+            UStatus::fail_with_code(UCode::UNAVAILABLE, "failed to connect to MQTT broker")
+        }
+        paho_mqtt::Error::ReasonCode(paho_mqtt::ReasonCode::BadUserNameOrPassword, _) => {
+            UStatus::fail_with_code(UCode::UNAUTHENTICATED, "bad credentials")
+        }
+        // [impl->dsn~mqtt5-transport-authorization~1]
+        paho_mqtt::Error::ReasonCode(paho_mqtt::ReasonCode::NotAuthorized, _) => {
+            UStatus::fail_with_code(UCode::PERMISSION_DENIED, "not authorized")
+        }
+        paho_mqtt::Error::ReasonCode(paho_mqtt::ReasonCode::ServerUnavailable, _) => {
+            UStatus::fail_with_code(UCode::UNAVAILABLE, "server not available")
+        }
+        paho_mqtt::Error::ReasonCode(paho_mqtt::ReasonCode::ServerBusy, _) => {
+            UStatus::fail_with_code(UCode::UNAVAILABLE, "server busy")
+        }
+        paho_mqtt::Error::ReasonCode(paho_mqtt::ReasonCode::BadAuthenticationMethod, _) => {
+            UStatus::fail_with_code(UCode::UNAUTHENTICATED, "bad authentication method")
+        }
+        paho_mqtt::Error::ReasonCode(paho_mqtt::ReasonCode::MessageRateTooHigh, _) => {
+            UStatus::fail_with_code(UCode::RESOURCE_EXHAUSTED, "message rate to high")
+        }
+        paho_mqtt::Error::ReasonCode(paho_mqtt::ReasonCode::QuotaExceeded, _) => {
+            UStatus::fail_with_code(UCode::RESOURCE_EXHAUSTED, "quota exceeded")
+        }
+        paho_mqtt::Error::ReasonCode(paho_mqtt::ReasonCode::ConnectionRateExceeded, _) => {
+            UStatus::fail_with_code(UCode::RESOURCE_EXHAUSTED, "connection rate exceeded")
+        }
+        paho_mqtt::Error::ReasonCode(paho_mqtt::ReasonCode::MaximumConnectTime, _) => {
+            UStatus::fail_with_code(UCode::RESOURCE_EXHAUSTED, "maximum connect time exceeded")
+        }
+        _ => {
+            error!("paho error: {paho_error:?}");
+            UStatus::fail_with_code(UCode::INTERNAL, paho_error.to_string())
+        }
     }
 }
 
@@ -331,18 +374,6 @@ pub(crate) struct PahoBasedMqttClientOperations {
 }
 
 impl PahoBasedMqttClientOperations {
-    fn ustatus_from_paho_error(paho_error: &paho_mqtt::Error) -> UStatus {
-        match paho_error {
-            paho_mqtt::Error::Disconnected => {
-                UStatus::fail_with_code(UCode::UNAVAILABLE, "not connected to MQTT broker")
-            }
-            paho_mqtt::Error::TcpTlsConnectFailure => {
-                UStatus::fail_with_code(UCode::UNAVAILABLE, "failed to connect to MQTT broker")
-            }
-            _ => UStatus::fail_with_code(UCode::UNKNOWN, paho_error.to_string()),
-        }
-    }
-
     /// Creates new MQTT client.
     ///
     /// # Arguments
@@ -491,12 +522,7 @@ impl MqttClientOperations for PahoBasedMqttClientOperations {
                     Self::process_connack(user_data, response);
                 }
             })
-            .map_err(|e| {
-                UStatus::fail_with_code(
-                    UCode::INTERNAL,
-                    format!("Failed to connect to MQTT broker: {e:?}"),
-                )
-            })
+            .map_err(ustatus_from_paho_error)
     }
 
     fn is_connected(&self) -> bool {
@@ -607,7 +633,7 @@ impl MqttClientOperations for PahoBasedMqttClientOperations {
         self.inner_mqtt_client
             .publish(mqtt_message)
             .await
-            .map_err(|paho_error| Self::ustatus_from_paho_error(&paho_error))
+            .map_err(ustatus_from_paho_error)
     }
 
     async fn subscribe(&self, topic: &str, id: u16) -> Result<(), UStatus> {
@@ -634,7 +660,7 @@ impl MqttClientOperations for PahoBasedMqttClientOperations {
             // QOS 1 - Delivered and received at least once
             .subscribe_with_options(topic, paho_mqtt::QOS_1, None, subscription_properties)
             .await
-            .map_err(|paho_error| Self::ustatus_from_paho_error(&paho_error))
+            .map_err(ustatus_from_paho_error)
             .map(|_| ())
     }
 
@@ -642,14 +668,17 @@ impl MqttClientOperations for PahoBasedMqttClientOperations {
         self.inner_mqtt_client
             .unsubscribe(topic)
             .await
-            .map_err(|paho_error| Self::ustatus_from_paho_error(&paho_error))
+            .map_err(ustatus_from_paho_error)
             .map(|_| ())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use paho_mqtt::ConnectOptions;
+    use paho_mqtt::{ConnectOptions, Properties};
+    use up_rust::UCode;
+
+    use crate::mqtt_client::ustatus_from_paho_error;
 
     use super::MqttClientOptions;
 
@@ -667,5 +696,19 @@ mod tests {
         // it is not possible to verify that the session expiry interval has been correctly set,
         // because the ConnectOptions struct does not (yet) provide access to the CONNECT packet
         // properties
+    }
+
+    #[test_case::test_case(
+        paho_mqtt::Error::TcpTlsConnectFailure => UCode::UNAVAILABLE;
+        "connect failure")]
+    #[test_case::test_case(
+        paho_mqtt::Error::Disconnected => UCode::UNAVAILABLE;
+        "disconnected")]
+    // [utest->dsn~mqtt5-transport-authorization~1]
+    #[test_case::test_case(
+        paho_mqtt::Error::ReasonCode(paho_mqtt::ReasonCode::NotAuthorized, Properties::new()) => UCode::PERMISSION_DENIED;
+        "not authorized")]
+    fn test_ustatus_from_paho_error(paho_error: paho_mqtt::Error) -> UCode {
+        ustatus_from_paho_error(paho_error).get_code()
     }
 }
